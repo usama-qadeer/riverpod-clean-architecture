@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:app_with_riverpod/main_exports.dart';
 import 'package:app_with_riverpod/src/core/constants/api_urls.dart';
 import 'package:app_with_riverpod/src/core/error/api_error.dart';
+import 'package:app_with_riverpod/src/core/logger/logger.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -60,8 +61,11 @@ class NetworkApiService implements BaseApiService {
       return _handleResponse(response);
     } on DioException catch (e) {
       throw _handleDioError(e);
-    } catch (_) {
-      throw const UnknownException("Unexpected error");
+    } on AppException {
+      rethrow;
+    } catch (e, st) {
+      AppLogger.e("Unexpected error in post: $e\n$st");
+      throw UnknownException("Unexpected error: $e");
     }
   }
 
@@ -81,8 +85,11 @@ class NetworkApiService implements BaseApiService {
       return _handleResponse(response);
     } on DioException catch (e) {
       throw _handleDioError(e);
-    } catch (_) {
-      throw const UnknownException("Unexpected error");
+    } on AppException {
+      rethrow;
+    } catch (e, st) {
+      AppLogger.e("Unexpected error in post: $e\n$st");
+      throw UnknownException("Unexpected error: $e");
     }
   }
 
@@ -102,8 +109,11 @@ class NetworkApiService implements BaseApiService {
       return _handleResponse(response);
     } on DioException catch (e) {
       throw _handleDioError(e);
-    } catch (_) {
-      throw const UnknownException("Unexpected error");
+    } on AppException {
+      rethrow;
+    } catch (e, st) {
+      AppLogger.e("Unexpected error in post: $e\n$st");
+      throw UnknownException("Unexpected error: $e");
     }
   }
 
@@ -113,16 +123,20 @@ class NetworkApiService implements BaseApiService {
   dynamic _handleResponse(Response response) {
     final code = response.statusCode ?? 0;
 
+    // Success
     if (code == 200 || code == 201) {
       return response.data;
     }
 
+    // Extract message
     final message = _extractMessage(response.data);
 
+    // Validation / Bad request
     if (code == 400 || code == 422) {
       throw ValidationException(message, code: code);
     }
 
+    // Unauthorized
     if (code == 401 || code == 403) {
       throw UnauthorizedException(
         message.isEmpty ? "Unauthorized" : message,
@@ -130,6 +144,15 @@ class NetworkApiService implements BaseApiService {
       );
     }
 
+    // **404 Not Found** → treat as validation / server error
+    if (code == 404) {
+      throw ValidationException(
+        message.isEmpty ? "Resource not found" : message,
+        code: code,
+      );
+    }
+
+    // Any other server error
     throw ServerException("Server error ($code): $message", code: code);
   }
 
@@ -137,31 +160,63 @@ class NetworkApiService implements BaseApiService {
   /// 🔹 Extract Error Message
   /// ===============================
   String _extractMessage(dynamic data) {
-    if (data is Map<String, dynamic>) {
-      final error = ApiErrorModel.fromJson(data);
-      return error.readableMessage;
+    try {
+      if (data is Map) {
+        final map = Map<String, dynamic>.from(data);
+        final error = ApiErrorModel.fromJson(map);
+        return error.readableMessage;
+      }
+
+      if (data is String) {
+        return data;
+      }
+
+      return "Something went wrong";
+    } catch (e, st) {
+      AppLogger.e("_extractMessage error: $e\n$st");
+      return "Something went wrong";
     }
-    if (data is String) {
-      return data;
-    }
-    return "Something went wrong";
   }
 
   /// ===============================
   /// 🔹 Dio Error Handler
   /// ===============================
   AppException _handleDioError(DioException e) {
+    // 1) Pure internet/socket issues
     if (e.error is SocketException) {
-      return const NoInternetException("Please check your internet connection");
+      return const NoInternetException("No internet connection");
     }
 
+    // 2) Dio network connection issue
+    if (e.type == DioExceptionType.connectionError) {
+      return const NoInternetException("No internet connection");
+    }
+
+    // 3) Often internet drops in middle of request come here
+    if (e.type == DioExceptionType.unknown) {
+      final errorString = e.error?.toString().toLowerCase() ?? '';
+      final messageString = e.message?.toLowerCase() ?? '';
+
+      if (errorString.contains('socketexception') ||
+          errorString.contains('failed host lookup') ||
+          errorString.contains('network is unreachable') ||
+          errorString.contains('connection aborted') ||
+          messageString.contains('socketexception') ||
+          messageString.contains('failed host lookup')) {
+        return const NoInternetException("No internet connection");
+      }
+    }
+
+    // 4) Timeout
     if (e.type == DioExceptionType.connectionTimeout ||
-        e.type == DioExceptionType.receiveTimeout) {
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout) {
       return const ServerException(
         "Connection timeout. Please try again later.",
       );
     }
 
+    // 5) Server response
     final res = e.response;
     if (res != null) {
       final code = res.statusCode ?? 0;
@@ -175,9 +230,17 @@ class NetworkApiService implements BaseApiService {
         return UnauthorizedException(msg, code: code);
       }
 
-      return ServerException(msg, code: code);
+      if (code == 404) {
+        return ValidationException(
+          msg.isEmpty ? "Resource not found" : msg,
+          code: code,
+        );
+      }
+
+      return ServerException(msg.isEmpty ? "Server error" : msg, code: code);
     }
 
-    return UnknownException("Unexpected error: ${e.message}");
+    // 6) Fallback
+    return const UnknownException("Something went wrong");
   }
 }

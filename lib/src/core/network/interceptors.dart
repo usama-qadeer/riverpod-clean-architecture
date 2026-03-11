@@ -1,3 +1,5 @@
+import 'package:app_with_riverpod/src/core/error/app_exception.dart';
+import 'package:app_with_riverpod/src/core/utils/internet_connection.dart';
 import 'package:dio/dio.dart';
 import '../logger/logger.dart';
 
@@ -12,26 +14,40 @@ class AppInterceptors extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    // ✅ Check if token should be skipped
-    final skipToken = options.extra['skipAuth'] == true;
+    try {
+      final skipToken = options.extra['skipAuth'] == true;
 
-    if (!skipToken && tokenProvider != null) {
-      final token = await tokenProvider!.call();
-      if (token != null && token.isNotEmpty) {
-        options.headers['Authorization'] = 'Bearer $token';
+      final hasInternet = await InternetChecker.hasConnection();
+      if (!hasInternet) {
+        handler.reject(
+          DioException(
+            requestOptions: options,
+            type: DioExceptionType.connectionError,
+            error: const NoInternetException("No internet connection"),
+          ),
+        );
+        return;
       }
-    }
 
-    // Logging
-    AppLogger.d("➡️ ${options.method} ${options.uri}");
-    AppLogger.d("Headers: ${options.headers}");
-    if (options.data is Map<String, dynamic>) {
-      AppLogger.d("Body: ${AppLogger.maskSensitive(options.data)}");
-    } else if (options.data != null) {
-      AppLogger.d("Body: ${options.data}");
-    }
+      if (!skipToken && tokenProvider != null) {
+        final token = await tokenProvider!.call();
+        if (token != null && token.isNotEmpty) {
+          options.headers['Authorization'] = 'Bearer $token';
+        }
+      }
 
-    handler.next(options);
+      AppLogger.d("➡️ ${options.method} ${options.uri}");
+      AppLogger.d("Headers: ${options.headers}");
+      if (options.data is Map<String, dynamic>) {
+        AppLogger.d("Body: ${AppLogger.maskSensitive(options.data)}");
+      } else if (options.data != null) {
+        AppLogger.d("Body: ${options.data}");
+      }
+
+      handler.next(options);
+    } catch (e) {
+      handler.reject(DioException(requestOptions: options, error: e));
+    }
   }
 
   @override

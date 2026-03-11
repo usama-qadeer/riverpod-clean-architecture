@@ -19,10 +19,12 @@ class ApiErrorModel {
     );
   }
 
-  /// 🔥 readable message
   String get readableMessage {
     if (errors != null && errors!.isNotEmpty) {
-      return errors!.values.first.first;
+      final firstList = errors!.values.first;
+      if (firstList.isNotEmpty) {
+        return firstList.first;
+      }
     }
     return message ?? "Something went wrong";
   }
